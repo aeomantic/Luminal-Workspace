@@ -1,20 +1,20 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "luminal-workspace",
+  "productName": "Luminal Workspace",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "com.aeomantic.luminal-workspace",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:3000",
+    "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [
       {
-        "title": "luminal-workspace",
-        "width": 800,
-        "height": 600,
+        "title": "Luminal Workspace",
+        "width": 1280,
+        "height": 800,
         "resizable": true,
         "fullscreen": false
       }
