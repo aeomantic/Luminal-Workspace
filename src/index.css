@@ -1,0 +1,121 @@
+/* ── Self-hosted variable font ─────────────────────────────────────────── */
+@font-face {
+  font-family: "Inconsolata";
+  src: url('/fonts/static/Inconsolata-VariableFont_wdth,wght.ttf') format('truetype');
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Tailwind directives ───────────────────────────────────────────────── */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Global reset / base ───────────────────────────────────────────────── */
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    /* Kinetic Void base surface – never pure black */
+    background-color: #131313;
+    color: #e8e8e8;
+    font-family: "Inconsolata", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Remove default focus ring; we supply our own neon glow */
+  :focus-visible {
+    outline: none;
+  }
+}
+
+/* ── cmdk internal overrides ───────────────────────────────────────────── */
+/* cmdk ships its own stylesheet; we override without !important by
+   raising specificity via the data-attributes cmdk adds to the DOM. */
+[cmdk-root] {
+  width: 100%;
+}
+
+[cmdk-input-wrapper] {
+  /* Input area – bottom-only active line instead of a 4-sided border */
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0;
+}
+
+[cmdk-input] {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: #e8e8e8;
+  font-family: "Inconsolata", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 1rem;
+  line-height: 1.6;
+  caret-color: #00b4d8; /* Electric Blue caret */
+}
+
+[cmdk-input]::placeholder {
+  color: rgba(232, 232, 232, 0.35);
+}
+
+[cmdk-list] {
+  overflow-y: auto;
+  max-height: 380px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent;
+}
+
+[cmdk-group-heading] {
+  font-family: "Inconsolata", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(232, 232, 232, 0.35);
+  padding: 20px 16px 6px;
+}
+
+[cmdk-item] {
+  cursor: pointer;
+  border-radius: 0.5rem;
+  transition: background 120ms ease;
+}
+
+/* Highlight = background shift only, zero border */
+[cmdk-item][aria-selected='true'],
+[cmdk-item][data-selected='true'] {
+  background: rgba(53, 53, 52, 1); /* surface-container-highest fully opaque */
+}
+
+[cmdk-empty] {
+  text-align: center;
+  font-size: 0.875rem;
+  color: rgba(232, 232, 232, 0.4);
+  padding: 32px 16px;
+}
+
+/* ── Thin scrollbars for explorer / lists ──────────────────────────────────── */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.07) transparent;
+}
+.scrollbar-thin::-webkit-scrollbar       { width: 4px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 9999px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
