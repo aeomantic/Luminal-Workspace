@@ -19,10 +19,9 @@ import {
   useEffect,
   useCallback,
   useRef,
-  useState,
-  createPortal,
   type KeyboardEvent,
 } from 'react'
+import { createPortal } from 'react-dom'
 import { Command } from 'cmdk'
 import {
   Search,

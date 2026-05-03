@@ -15,9 +15,9 @@ import {
   useEffect,
   useRef,
   useCallback,
-  createPortal,
   type KeyboardEvent,
 } from 'react'
+import { createPortal } from 'react-dom'
 import type { ContextEntry, ContextMenuPosition } from './types'
 import { cn } from '../../lib/utils'
 

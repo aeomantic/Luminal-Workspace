@@ -203,7 +203,7 @@ export function useFileSystem(): UseFileSystemReturn {
     })
 
     try {
-      const { tree, rootHandle } = state
+      const { tree } = state
       const node = findNode(tree, path)
       if (!node || node.kind !== 'directory' || node.children !== null) return
 
@@ -222,8 +222,6 @@ export function useFileSystem(): UseFileSystemReturn {
     } catch {
       setState((s) => ({ ...s, loading: false }))
     }
-    // rootHandle is used indirectly — we only need it to verify it exists
-    void state.rootHandle
   }, [state])
 
   // ── Refresh directory ──────────────────────────────────────────────────────

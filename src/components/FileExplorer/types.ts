@@ -54,4 +54,3 @@ export type ContextEntry = ContextAction | ContextSeparator
 export type InlineInputMode =
   | { mode: 'create-file';   parentPath: string }
   | { mode: 'create-folder'; parentPath: string }
-  | { mode: 'rename';        nodePath: string; currentName: string }
