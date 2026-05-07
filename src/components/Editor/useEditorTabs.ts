@@ -1,12 +1,6 @@
-/**
- * useEditorTabs
- * ─────────────
- * Manages the open-file tab list. Uses the Web File System Access API to
- * read/write file content. Monaco manages its own in-memory buffer; we
- * track only the on-disk snapshot (`savedContent`) and a dirty flag.
- */
-
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
+import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
+import { open as openFileDialog, save as saveFileDialog } from '@tauri-apps/plugin-dialog'
 import type { FileNode } from '../FileExplorer/types'
 
 // ── Language detection ────────────────────────────────────────────────────────
@@ -53,9 +47,10 @@ export function detectLanguage(name: string): string {
 export interface EditorTab {
   path: string
   name: string
-  /** Content that was last written to disk (at open time or after save). */
+  /** Content last written to disk (at open time or after save). */
   savedContent: string
-  handle: FileSystemFileHandle
+  /** Absolute OS path used for all file I/O. null = untitled, not saved yet. */
+  absPath: string | null
   language: string
   isDirty: boolean
 }
@@ -65,6 +60,10 @@ export interface UseEditorTabsReturn {
   activeTabPath: string | null
   activeTab: EditorTab | null
   openTab: (node: FileNode) => Promise<void>
+  /** Open a file picker dialog and open the chosen file as a new tab. */
+  openFileByPath: () => Promise<void>
+  /** Create a new blank untitled tab. */
+  newUntitledTab: () => void
   closeTab: (path: string) => void
   closeAllTabs: () => void
   /** Close any tab whose path equals or starts with `pathPrefix` (for folder deletes). */
@@ -79,35 +78,67 @@ export interface UseEditorTabsReturn {
 export function useEditorTabs(): UseEditorTabsReturn {
   const [tabs, setTabs] = useState<EditorTab[]>([])
   const [activeTabPath, setActiveTabPath] = useState<string | null>(null)
+  const untitledCounter = useRef(0)
 
   const activeTab = tabs.find((t) => t.path === activeTabPath) ?? null
 
-  // ── Open a file ────────────────────────────────────────────────────────────
+  // ── New untitled tab ───────────────────────────────────────────────────────
+  const newUntitledTab = useCallback(() => {
+    untitledCounter.current += 1
+    const path = `untitled://${untitledCounter.current}`
+    const name = `Untitled-${untitledCounter.current}`
+    setTabs((prev) => [
+      ...prev,
+      { path, name, savedContent: '', absPath: null, language: 'plaintext', isDirty: false },
+    ])
+    setActiveTabPath(path)
+  }, [])
+
+  // ── Open via file dialog ───────────────────────────────────────────────────
+  const openFileByPath = useCallback(async () => {
+    const selected = await openFileDialog({ multiple: false, directory: false })
+    if (!selected || typeof selected !== 'string') return
+
+    const absPath = selected
+    // If already open, just focus it
+    const existing = tabs.find((t) => t.absPath === absPath)
+    if (existing) { setActiveTabPath(existing.path); return }
+
+    try {
+      const text = await readTextFile(absPath)
+      const name = absPath.replace(/\\/g, '/').split('/').pop() ?? absPath
+      const path = `file://${absPath}`
+      setTabs((prev) => {
+        if (prev.some((t) => t.path === path)) return prev
+        return [...prev, { path, name, savedContent: text, absPath, language: detectLanguage(name), isDirty: false }]
+      })
+      setActiveTabPath(path)
+    } catch (err) {
+      console.error('[tabs] open file failed:', err)
+    }
+  }, [tabs])
+
+  // ── Open a file node ───────────────────────────────────────────────────────
   const openTab = useCallback(async (node: FileNode) => {
     if (node.kind !== 'file') return
 
-    // Already open → just focus
     if (tabs.some((t) => t.path === node.path)) {
       setActiveTabPath(node.path)
       return
     }
 
     try {
-      const handle = node.handle as FileSystemFileHandle
-      const file   = await handle.getFile()
-      const text   = await file.text()
-
+      const text = await readTextFile(node.absPath)
       const newTab: EditorTab = {
         path:         node.path,
         name:         node.name,
         savedContent: text,
-        handle,
+        absPath:      node.absPath,
         language:     detectLanguage(node.name),
         isDirty:      false,
       }
 
       setTabs((prev) => {
-        // Guard against concurrent double-open
         if (prev.some((t) => t.path === node.path)) return prev
         return [...prev, newTab]
       })
@@ -119,8 +150,7 @@ export function useEditorTabs(): UseEditorTabsReturn {
 
   // ── Close a tab ────────────────────────────────────────────────────────────
   const closeTab = useCallback((path: string) => {
-    // Determine next active before mutating
-    const idx      = tabs.findIndex((t) => t.path === path)
+    const idx       = tabs.findIndex((t) => t.path === path)
     const remaining = tabs.filter((t) => t.path !== path)
     const nextPath  =
       activeTabPath === path
@@ -131,7 +161,7 @@ export function useEditorTabs(): UseEditorTabsReturn {
     setActiveTabPath(nextPath)
   }, [tabs, activeTabPath])
 
-  // ── Close all tabs (workspace switch) ─────────────────────────────────────
+  // ── Close all tabs ─────────────────────────────────────────────────────────
   const closeAllTabs = useCallback(() => {
     setTabs([])
     setActiveTabPath(null)
@@ -157,33 +187,40 @@ export function useEditorTabs(): UseEditorTabsReturn {
     setActiveTabPath(path)
   }, [])
 
-  // ── Mark dirty state (called by Monaco onChange) ───────────────────────────
+  // ── Mark dirty state ───────────────────────────────────────────────────────
   const setDirty = useCallback((path: string, isDirty: boolean) => {
     setTabs((prev) =>
       prev.map((t) => (t.path === path ? { ...t, isDirty } : t)),
     )
   }, [])
 
-  // ── Save (called with fresh content from editor.getValue()) ───────────────
+  // ── Save (with Save As for untitled tabs) ──────────────────────────────────
   const saveTab = useCallback(async (path: string, freshContent: string) => {
     const tab = tabs.find((t) => t.path === path)
     if (!tab) return
 
+    let targetPath = tab.absPath
+
+    if (!targetPath) {
+      const chosen = await saveFileDialog({ title: 'Save File', defaultPath: tab.name })
+      if (!chosen) return
+      targetPath = chosen
+    }
+
     try {
-      const writable = await tab.handle.createWritable()
-      await writable.write(freshContent)
-      await writable.close()
+      await writeTextFile(targetPath, freshContent)
+      const savedName = targetPath.replace(/\\/g, '/').split('/').pop() ?? tab.name
 
       setTabs((prev) =>
         prev.map((t) =>
           t.path === path
-            ? { ...t, savedContent: freshContent, isDirty: false }
+            ? { ...t, absPath: targetPath!, name: savedName, savedContent: freshContent, isDirty: false }
             : t,
         ),
       )
     } catch (err) {
       console.error('[tabs] save failed:', err)
-      throw err  // propagate so EditorArea can display the error to the user
+      throw err
     }
   }, [tabs])
 
@@ -192,6 +229,8 @@ export function useEditorTabs(): UseEditorTabsReturn {
     activeTabPath,
     activeTab,
     openTab,
+    openFileByPath,
+    newUntitledTab,
     closeTab,
     closeAllTabs,
     forceCloseByPrefix,

@@ -15,8 +15,11 @@
         "title": "Luminal Workspace",
         "width": 1280,
         "height": 800,
+        "minWidth": 800,
+        "minHeight": 520,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "decorations": false
       }
     ],
     "security": {

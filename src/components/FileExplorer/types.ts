@@ -10,8 +10,8 @@ export interface FileNode {
   id: string
   name: string
   kind: 'file' | 'directory'
-  /** Underlying Web File System Access API handle */
-  handle: FileSystemFileHandle | FileSystemDirectoryHandle
+  /** Absolute OS path to this entry (used for all Tauri FS operations) */
+  absPath: string
   /** `null` for files, and for unloaded directories */
   children: FileNode[] | null
   isExpanded: boolean

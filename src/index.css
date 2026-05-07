@@ -119,3 +119,28 @@
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.14);
 }
+
+/* ── Custom title bar drag regions ─────────────────────────────────────────── */
+/* .titlebar-drag is applied to the outer <header>; all interactive children   */
+/* (menus, buttons) must use .titlebar-no-drag to restore normal click events. */
+.titlebar-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.titlebar-no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* ── xterm.js overrides ─────────────────────────────────────────────────────── */
+/* Ensure the xterm canvas fills its flex container without overflow.           */
+.xterm {
+  height: 100%;
+}
+
+.xterm-viewport {
+  overflow-y: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.07) transparent;
+}

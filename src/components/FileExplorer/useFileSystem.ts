@@ -1,51 +1,44 @@
-/**
- * useFileSystem
- * ─────────────
- * Manages the workspace root and the lazy-loaded file tree.
- * Backed by the Web File System Access API — works in Tauri's WebView2
- * (Chromium-based) without any Node or Rust dependency.
- *
- * Migration note: when Tauri's `@tauri-apps/plugin-fs` is available, replace
- * `showDirectoryPicker` with `open({ directory: true })` from
- * `@tauri-apps/plugin-dialog` and the FS calls with the plugin equivalents.
- */
-
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
+import { readDir, writeTextFile, mkdir, remove, rename } from '@tauri-apps/plugin-fs'
+import { open } from '@tauri-apps/plugin-dialog'
 import type { FileNode } from './types'
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Path helpers ─────────────────────────────────────────────────────────────
 
-/** Load the immediate children of a directory handle. Directories start with
- *  `children: null` (unloaded); calling this populates them. */
-async function readDirectoryChildren(
-  dirHandle: FileSystemDirectoryHandle,
-  parentPath: string,
-): Promise<FileNode[]> {
+function normalizePath(p: string): string {
+  return p.replace(/\\/g, '/')
+}
+
+function joinPath(base: string, name: string): string {
+  return name ? `${normalizePath(base)}/${name}` : normalizePath(base)
+}
+
+// ─── Tree helpers ─────────────────────────────────────────────────────────────
+
+async function readDirectoryChildren(absPath: string, relativePath: string): Promise<FileNode[]> {
+  const entries = await readDir(absPath)
   const nodes: FileNode[] = []
 
-  for await (const handle of dirHandle.values()) {
-    const childPath = parentPath ? `${parentPath}/${handle.name}` : handle.name
+  for (const entry of entries) {
+    if (!entry.name) continue
+    const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name
     nodes.push({
-      id: childPath,
-      name: handle.name,
-      kind: handle.kind,
-      handle: handle as FileSystemFileHandle | FileSystemDirectoryHandle,
-      children: null,   // lazy — will be loaded on first expand
+      id: childRelative,
+      name: entry.name,
+      kind: entry.isDirectory ? 'directory' : 'file',
+      absPath: joinPath(absPath, entry.name),
+      children: null,
       isExpanded: false,
-      path: childPath,
+      path: childRelative,
     })
   }
 
-  // Directories first, then files; both sorted A→Z
   return nodes.sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1
     return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
   })
 }
 
-/** Immutable deep-update: walk the tree and apply `updater` to the node whose
- *  `path` matches `targetPath`. Returns the same array reference if nothing
- *  changed (so React can bail out of re-renders). */
 function updateNode(
   nodes: FileNode[],
   targetPath: string,
@@ -53,7 +46,6 @@ function updateNode(
 ): FileNode[] {
   return nodes.map((node) => {
     if (node.path === targetPath) return updater(node)
-    // Recurse only into ancestors of the target
     if (node.children && targetPath.startsWith(node.path + '/')) {
       return { ...node, children: updateNode(node.children, targetPath, updater) }
     }
@@ -61,7 +53,6 @@ function updateNode(
   })
 }
 
-/** Remove a node from the tree by path */
 function removeNode(nodes: FileNode[], targetPath: string): FileNode[] {
   return nodes
     .filter((n) => n.path !== targetPath)
@@ -73,7 +64,6 @@ function removeNode(nodes: FileNode[], targetPath: string): FileNode[] {
     })
 }
 
-/** Find a node by path (returns null if not found) */
 function findNode(nodes: FileNode[], targetPath: string): FileNode | null {
   for (const node of nodes) {
     if (node.path === targetPath) return node
@@ -85,7 +75,6 @@ function findNode(nodes: FileNode[], targetPath: string): FileNode | null {
   return null
 }
 
-/** Recursively set isExpanded: false on every directory node */
 function collapseAllNodes(nodes: FileNode[]): FileNode[] {
   return nodes.map((node) => {
     if (node.kind !== 'directory') return node
@@ -93,24 +82,11 @@ function collapseAllNodes(nodes: FileNode[]): FileNode[] {
   })
 }
 
-/** Get the parent directory handle for a given path within the root tree */
-async function resolveParentHandle(
-  rootHandle: FileSystemDirectoryHandle,
-  path: string,
-): Promise<FileSystemDirectoryHandle> {
-  const parts = path.split('/')
-  let current = rootHandle
-  for (const part of parts.slice(0, -1)) {
-    current = await current.getDirectoryHandle(part)
-  }
-  return current
-}
-
 // ─── State shape ──────────────────────────────────────────────────────────────
 
 interface FileSystemState {
   rootName: string | null
-  rootHandle: FileSystemDirectoryHandle | null
+  rootAbsPath: string | null
   tree: FileNode[]
   loading: boolean
   error: string | null
@@ -118,58 +94,76 @@ interface FileSystemState {
 
 const INITIAL_STATE: FileSystemState = {
   rootName: null,
-  rootHandle: null,
+  rootAbsPath: null,
   tree: [],
   loading: false,
   error: null,
 }
 
-// ─── Hook ─────────────────────────────────────────────────────────────────────
+// ─── Public interface ─────────────────────────────────────────────────────────
 
 export interface UseFileSystemReturn {
   state: FileSystemState
-  /** Open the native folder-picker and load the workspace root */
   openFolder: () => Promise<void>
-  /** Collapse every directory node in the tree */
   collapseAll: () => void
-  /** Expand or collapse a directory node (lazy-loads children on first expand) */
   toggleExpand: (path: string) => Promise<void>
-  /** Create a new empty file at `parentPath/name` */
   createFile: (parentPath: string | null, name: string) => Promise<void>
-  /** Create a new directory at `parentPath/name` */
   createFolder: (parentPath: string | null, name: string) => Promise<void>
-  /** Rename a node in place */
   renameNode: (path: string, newName: string) => Promise<void>
-  /** Move a file/folder to the system trash (best-effort) */
   deleteNode: (path: string) => Promise<void>
-  /** Copy the absolute-ish path to the clipboard (workspace root name + relative path) */
   copyPath: (path: string) => void
-  /** Copy just the relative path to the clipboard */
   copyRelativePath: (path: string) => void
-  /** Refresh the children of a directory */
   refreshDirectory: (path: string | null) => Promise<void>
+}
+
+// ─── Hook ─────────────────────────────────────────────────────────────────────
+
+const LAST_FOLDER_KEY = 'luminal:lastFolder'
+
+async function loadFolder(absPath: string): Promise<FileSystemState> {
+  const tree = await readDirectoryChildren(absPath, '')
+  return {
+    rootName: absPath.split('/').pop() ?? absPath,
+    rootAbsPath: absPath,
+    tree,
+    loading: false,
+    error: null,
+  }
 }
 
 export function useFileSystem(): UseFileSystemReturn {
   const [state, setState] = useState<FileSystemState>(INITIAL_STATE)
 
+  // ── Restore last folder on mount ───────────────────────────────────────────
+  useEffect(() => {
+    const saved = localStorage.getItem(LAST_FOLDER_KEY)
+    if (!saved) return
+    let cancelled = false
+    setState((s) => ({ ...s, loading: true }))
+    loadFolder(saved)
+      .then((next) => { if (!cancelled) setState(next) })
+      .catch(() => {
+        // Folder no longer accessible (deleted / moved / permissions changed)
+        if (!cancelled) {
+          localStorage.removeItem(LAST_FOLDER_KEY)
+          setState((s) => ({ ...s, loading: false }))
+        }
+      })
+    return () => { cancelled = true }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Open folder ────────────────────────────────────────────────────────────
 
   const openFolder = useCallback(async () => {
     try {
-      const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' })
+      const selected = await open({ directory: true, multiple: false, title: 'Open Folder' }) as string | null
+      if (!selected) return
+      const absPath = normalizePath(selected)
       setState((s) => ({ ...s, loading: true, error: null }))
-      const tree = await readDirectoryChildren(dirHandle, '')
-      setState({
-        rootName: dirHandle.name,
-        rootHandle: dirHandle,
-        tree,
-        loading: false,
-        error: null,
-      })
+      const next = await loadFolder(absPath)
+      localStorage.setItem(LAST_FOLDER_KEY, absPath)
+      setState(next)
     } catch (err) {
-      // User cancelled the picker — not an error worth surfacing
-      if (err instanceof DOMException && err.name === 'AbortError') return
       setState((s) => ({
         ...s,
         loading: false,
@@ -184,18 +178,15 @@ export function useFileSystem(): UseFileSystemReturn {
     setState((s) => {
       const node = findNode(s.tree, path)
       if (!node || node.kind !== 'directory') return s
-      // If already loaded — just flip isExpanded synchronously
       if (node.children !== null) {
         return {
           ...s,
           tree: updateNode(s.tree, path, (n) => ({ ...n, isExpanded: !n.isExpanded })),
         }
       }
-      // Async load will be done outside setState
       return s
     })
 
-    // Async path: load children if not yet loaded
     setState((s) => {
       const node = findNode(s.tree, path)
       if (!node || node.kind !== 'directory' || node.children !== null) return s
@@ -203,21 +194,14 @@ export function useFileSystem(): UseFileSystemReturn {
     })
 
     try {
-      const { tree } = state
-      const node = findNode(tree, path)
+      const node = findNode(state.tree, path)
       if (!node || node.kind !== 'directory' || node.children !== null) return
 
-      const dirHandle = node.handle as FileSystemDirectoryHandle
-      const children = await readDirectoryChildren(dirHandle, path)
-
+      const children = await readDirectoryChildren(node.absPath, path)
       setState((s) => ({
         ...s,
         loading: false,
-        tree: updateNode(s.tree, path, (n) => ({
-          ...n,
-          children,
-          isExpanded: true,
-        })),
+        tree: updateNode(s.tree, path, (n) => ({ ...n, children, isExpanded: true })),
       }))
     } catch {
       setState((s) => ({ ...s, loading: false }))
@@ -225,17 +209,15 @@ export function useFileSystem(): UseFileSystemReturn {
   }, [state])
 
   // ── Refresh directory ──────────────────────────────────────────────────────
-  // Declared before createFile/createFolder/renameNode so it can be listed
-  // in their dependency arrays without a temporal dead zone error.
 
   const refreshDirectory = useCallback(async (path: string | null) => {
-    const { rootHandle, tree } = state
-    if (!rootHandle) return
+    const { rootAbsPath, tree } = state
+    if (!rootAbsPath) return
 
     setState((s) => ({ ...s, loading: true }))
     try {
       if (!path) {
-        const freshTree = await readDirectoryChildren(rootHandle, '')
+        const freshTree = await readDirectoryChildren(rootAbsPath, '')
         setState((s) => ({ ...s, tree: freshTree, loading: false }))
         return
       }
@@ -246,9 +228,7 @@ export function useFileSystem(): UseFileSystemReturn {
         return
       }
 
-      const dirHandle = node.handle as FileSystemDirectoryHandle
-      const children = await readDirectoryChildren(dirHandle, path)
-
+      const children = await readDirectoryChildren(node.absPath, path)
       setState((s) => ({
         ...s,
         loading: false,
@@ -263,19 +243,14 @@ export function useFileSystem(): UseFileSystemReturn {
   // ── Create file ────────────────────────────────────────────────────────────
 
   const createFile = useCallback(async (parentPath: string | null, name: string) => {
-    const { rootHandle, tree } = state
-    if (!rootHandle) return
+    const { rootAbsPath, tree } = state
+    if (!rootAbsPath) return
 
     try {
-      let parentHandle: FileSystemDirectoryHandle
-      if (!parentPath) {
-        parentHandle = rootHandle
-      } else {
-        const parentNode = findNode(tree, parentPath)
-        parentHandle = (parentNode?.handle ?? rootHandle) as FileSystemDirectoryHandle
-      }
-
-      await parentHandle.getFileHandle(name, { create: true })
+      const parentAbs = parentPath
+        ? (findNode(tree, parentPath)?.absPath ?? rootAbsPath)
+        : rootAbsPath
+      await writeTextFile(joinPath(parentAbs, name), '')
       await refreshDirectory(parentPath)
     } catch (err) {
       console.error('[FS] create file failed:', err)
@@ -289,19 +264,14 @@ export function useFileSystem(): UseFileSystemReturn {
   // ── Create folder ──────────────────────────────────────────────────────────
 
   const createFolder = useCallback(async (parentPath: string | null, name: string) => {
-    const { rootHandle, tree } = state
-    if (!rootHandle) return
+    const { rootAbsPath, tree } = state
+    if (!rootAbsPath) return
 
     try {
-      let parentHandle: FileSystemDirectoryHandle
-      if (!parentPath) {
-        parentHandle = rootHandle
-      } else {
-        const parentNode = findNode(tree, parentPath)
-        parentHandle = (parentNode?.handle ?? rootHandle) as FileSystemDirectoryHandle
-      }
-
-      await parentHandle.getDirectoryHandle(name, { create: true })
+      const parentAbs = parentPath
+        ? (findNode(tree, parentPath)?.absPath ?? rootAbsPath)
+        : rootAbsPath
+      await mkdir(joinPath(parentAbs, name))
       await refreshDirectory(parentPath)
     } catch (err) {
       console.error('[FS] create folder failed:', err)
@@ -313,41 +283,18 @@ export function useFileSystem(): UseFileSystemReturn {
   }, [state, refreshDirectory])
 
   // ── Rename node ────────────────────────────────────────────────────────────
-  // The File System Access API has no rename() — we copy then delete.
+  // Uses std::fs::rename under the hood — atomic, works for both files and dirs.
 
   const renameNode = useCallback(async (path: string, newName: string) => {
-    const { rootHandle, tree } = state
-    if (!rootHandle) return
+    const { tree } = state
+    const node = findNode(tree, path)
+    if (!node) return
 
     try {
-      const node = findNode(tree, path)
-      if (!node) return
+      const parentAbs = node.absPath.split('/').slice(0, -1).join('/')
+      await rename(node.absPath, joinPath(parentAbs, newName))
 
       const parentPath = path.includes('/') ? path.split('/').slice(0, -1).join('/') : null
-      let parentHandle: FileSystemDirectoryHandle
-      if (!parentPath) {
-        parentHandle = rootHandle
-      } else {
-        parentHandle = await resolveParentHandle(rootHandle, path)
-      }
-
-      if (node.kind === 'file') {
-        const oldHandle = node.handle as FileSystemFileHandle
-        const oldFile = await oldHandle.getFile()
-        const newHandle = await parentHandle.getFileHandle(newName, { create: true })
-        const writable = await newHandle.createWritable()
-        await writable.write(await oldFile.arrayBuffer())
-        await writable.close()
-        await parentHandle.removeEntry(node.name)
-      } else {
-        // Directories: deep-copy then remove (best-effort for MVP)
-        await copyDirectory(
-          node.handle as FileSystemDirectoryHandle,
-          await parentHandle.getDirectoryHandle(newName, { create: true }),
-        )
-        await parentHandle.removeEntry(node.name, { recursive: true })
-      }
-
       await refreshDirectory(parentPath)
     } catch (err) {
       console.error('[FS] rename failed:', err)
@@ -357,23 +304,12 @@ export function useFileSystem(): UseFileSystemReturn {
   // ── Delete node ────────────────────────────────────────────────────────────
 
   const deleteNode = useCallback(async (path: string) => {
-    const { rootHandle, tree } = state
-    if (!rootHandle) return
-
+    const { tree } = state
     const node = findNode(tree, path)
     if (!node) return
 
     try {
-      const parentPath = path.includes('/') ? path.split('/').slice(0, -1).join('/') : null
-      let parentHandle: FileSystemDirectoryHandle
-      if (!parentPath) {
-        parentHandle = rootHandle
-      } else {
-        parentHandle = await resolveParentHandle(rootHandle, path)
-      }
-
-      await parentHandle.removeEntry(node.name, { recursive: node.kind === 'directory' })
-
+      await remove(node.absPath, { recursive: node.kind === 'directory' })
       setState((s) => ({ ...s, tree: removeNode(s.tree, path) }))
     } catch (err) {
       console.error('[FS] delete failed:', err)
@@ -383,9 +319,10 @@ export function useFileSystem(): UseFileSystemReturn {
   // ── Clipboard helpers ──────────────────────────────────────────────────────
 
   const copyPath = useCallback((path: string) => {
-    const full = state.rootName ? `${state.rootName}/${path}` : path
+    const { rootAbsPath } = state
+    const full = rootAbsPath ? joinPath(rootAbsPath, path) : path
     navigator.clipboard.writeText(full).catch(console.error)
-  }, [state.rootName])
+  }, [state.rootAbsPath])
 
   const copyRelativePath = useCallback((path: string) => {
     navigator.clipboard.writeText(path).catch(console.error)
@@ -407,26 +344,5 @@ export function useFileSystem(): UseFileSystemReturn {
     copyPath,
     copyRelativePath,
     refreshDirectory,
-  }
-}
-
-// ─── Internal deep-copy helper ─────────────────────────────────────────────────
-
-async function copyDirectory(
-  src: FileSystemDirectoryHandle,
-  dest: FileSystemDirectoryHandle,
-): Promise<void> {
-  for await (const handle of src.values()) {
-    if (handle.kind === 'file') {
-      const fileHandle = handle as FileSystemFileHandle
-      const file = await fileHandle.getFile()
-      const newHandle = await dest.getFileHandle(handle.name, { create: true })
-      const writable = await newHandle.createWritable()
-      await writable.write(await file.arrayBuffer())
-      await writable.close()
-    } else {
-      const subDest = await dest.getDirectoryHandle(handle.name, { create: true })
-      await copyDirectory(handle as FileSystemDirectoryHandle, subDest)
-    }
   }
 }

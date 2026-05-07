@@ -138,6 +138,8 @@ interface EditorAreaProps {
   onTabClose:   (path: string) => void
   onDirtyChange:(path: string, isDirty: boolean) => void
   onSave:       (path: string, content: string) => Promise<void>
+  /** App writes a getter fn here; call it to get the current editor selection. */
+  selectionGetterRef?: React.MutableRefObject<() => string>
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -149,9 +151,11 @@ export function EditorArea({
   onTabClose,
   onDirtyChange,
   onSave,
+  selectionGetterRef,
 }: EditorAreaProps) {
   const editorRef = useRef<MonacoEditorNS.IStandaloneCodeEditor | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   // ── Ctrl+S / Cmd+S ────────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {
@@ -181,16 +185,27 @@ export function EditorArea({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [handleSave])
 
+  // Clear auto-save timer on tab switch to avoid saving stale content
+  useEffect(() => {
+    clearTimeout(autoSaveTimerRef.current)
+  }, [activeTabPath])
+
   // ── Monaco callbacks ───────────────────────────────────────────────────────
   const handleMount: OnMount = useCallback((editor, monaco) => {
     editorRef.current = editor
     monaco.editor.defineTheme('kinetic-void', KV_THEME)
     monaco.editor.setTheme('kinetic-void')
-    // Register Ctrl+S inside Monaco so it fires before bubbling to window
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       void handleSaveRef.current()
     })
-  }, [])
+    if (selectionGetterRef) {
+      selectionGetterRef.current = () => {
+        const sel = editor.getSelection()
+        if (!sel || sel.isEmpty()) return ''
+        return editor.getModel()?.getValueInRange(sel) ?? ''
+      }
+    }
+  }, [selectionGetterRef])
 
   const activeTab = tabs.find((t) => t.path === activeTabPath) ?? null
 
@@ -316,7 +331,13 @@ export function EditorArea({
             onMount={handleMount}
             onChange={(val) => {
               if (val === undefined || !activeTab) return
-              onDirtyChange(activeTab.path, val !== activeTab.savedContent)
+              const dirty = val !== activeTab.savedContent
+              onDirtyChange(activeTab.path, dirty)
+              if (dirty && activeTab.absPath) {
+                clearTimeout(autoSaveTimerRef.current)
+                const path = activeTab.path
+                autoSaveTimerRef.current = setTimeout(() => void onSave(path, val), 1500)
+              }
             }}
             loading={
               <div className="flex items-center justify-center h-full bg-surface-container-lowest text-on-surface/20 text-sm font-mono">

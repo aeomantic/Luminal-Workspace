@@ -6,6 +6,7 @@ import {
   Puzzle,
   Bug,
   Settings,
+  Bot,
 } from 'lucide-react'
 import {
   CommandPalette,
@@ -17,11 +18,15 @@ import { FileExplorer, type FileExplorerHandle } from './components/FileExplorer
 import { EditorArea } from './components/Editor/EditorArea'
 import { useEditorTabs } from './components/Editor/useEditorTabs'
 import type { FileNode } from './components/FileExplorer/types'
+import { TitleBar, type MenuItemDef } from './components/TitleBar'
+import { TerminalPanel } from './components/Terminal'
+import { SourceControlPanel } from './components/SourceControl'
+import { AIPanel } from './components/AIPanel'
 import { cn } from './lib/utils'
 
 // ── Activity bar ──────────────────────────────────────────────────────────────
 
-type PanelId = 'files' | 'search' | 'git' | 'extensions' | 'debug'
+type PanelId = 'files' | 'search' | 'git' | 'ai' | 'extensions' | 'debug'
 
 interface ActivityItem { id: PanelId; icon: React.ReactNode; label: string }
 
@@ -29,17 +34,12 @@ const ACTIVITY_ITEMS: ActivityItem[] = [
   { id: 'files',      icon: <Files     size={20} />, label: 'Explorer (Ctrl+Shift+E)'  },
   { id: 'search',     icon: <Search    size={20} />, label: 'Search (Ctrl+Shift+F)'    },
   { id: 'git',        icon: <GitBranch size={20} />, label: 'Source Control'            },
+  { id: 'ai',         icon: <Bot       size={20} />, label: 'AI Assistant'              },
   { id: 'extensions', icon: <Puzzle    size={20} />, label: 'Extensions'                },
   { id: 'debug',      icon: <Bug       size={20} />, label: 'Run and Debug'             },
 ]
 
 const MENU_NAMES = ['File', 'Edit', 'View', 'Terminal'] as const
-
-// ── Menu item types ───────────────────────────────────────────────────────────
-
-type MenuItemDef =
-  | { type?: undefined; label: string; shortcut?: string; action?: () => void; disabled?: boolean }
-  | { type: 'sep' }
 
 // ── Command registry ──────────────────────────────────────────────────────────
 
@@ -51,22 +51,39 @@ const APP_COMMANDS: EditorCommand[] = [
     description: 'Close the application',
     group: 'File',
     shortcut: 'Ctrl+Q',
-    action: () => {
-      // Tauri v2: import { exit } from '@tauri-apps/plugin-process'; exit(0)
-      console.log('[cmd] quit')
-    },
+    action: () => { console.log('[cmd] quit') },
   },
 ]
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [paletteOpen, setPaletteOpen] = useState(false)
-  const [activePanel, setActivePanel] = useState<PanelId | null>('files')
-  const [openMenu, setOpenMenu] = useState<string | null>(null)
+  const [paletteOpen,  setPaletteOpen]  = useState(false)
+  const [activePanel,  setActivePanel]  = useState<PanelId | null>('files')
+  const [terminalOpen, setTerminalOpen] = useState(false)
+  const [rootAbsPath,  setRootAbsPath]  = useState<string | null>(null)
 
-  const menuBarRef = useRef<HTMLElement>(null)
-  const fileExplorerRef = useRef<FileExplorerHandle>(null)
+  // Responsive: track whether we're in mobile layout (< 768px)
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false,
+  )
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 768)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
+
+  // Sidebar width with localStorage persistence
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem('luminal:sidebarWidth')
+    return saved ? Number(saved) : 256
+  })
+  const isDraggingRef      = useRef(false)
+  const dragStartXRef      = useRef(0)
+  const dragStartWidthRef  = useRef(0)
+
+  const fileExplorerRef  = useRef<FileExplorerHandle>(null)
+  const selectionGetterRef = useRef<() => string>(() => '')
 
   const editorTabs = useEditorTabs()
   const {
@@ -74,6 +91,8 @@ export default function App() {
     activeTabPath,
     activeTab,
     openTab,
+    openFileByPath,
+    newUntitledTab,
     closeTab,
     closeAllTabs,
     forceCloseByPrefix,
@@ -82,26 +101,56 @@ export default function App() {
     saveTab,
   } = editorTabs
 
-  // ── Close menu when clicking outside the menu bar ─────────────────────────
-  useEffect(() => {
-    if (!openMenu) return
-    function handleDocClick(e: MouseEvent) {
-      if (menuBarRef.current && !menuBarRef.current.contains(e.target as Node)) {
-        setOpenMenu(null)
-      }
-    }
-    document.addEventListener('mousedown', handleDocClick)
-    return () => document.removeEventListener('mousedown', handleDocClick)
-  }, [openMenu])
-
   // ── Palette ───────────────────────────────────────────────────────────────
   const togglePalette = useCallback(() => setPaletteOpen((p) => !p), [])
   const closePalette  = useCallback(() => setPaletteOpen(false),     [])
   useCommandPaletteShortcut(togglePalette)
 
+  // ── Ctrl+` — toggle terminal panel ───────────────────────────────────────
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key === '`') {
+        e.preventDefault()
+        setTerminalOpen((p) => !p)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  // ── Sidebar resize drag ───────────────────────────────────────────────────
+  useEffect(() => {
+    function onMouseMove(e: MouseEvent) {
+      if (!isDraggingRef.current) return
+      const delta    = e.clientX - dragStartXRef.current
+      const newWidth = Math.max(160, Math.min(480, dragStartWidthRef.current + delta))
+      setSidebarWidth(newWidth)
+      localStorage.setItem('luminal:sidebarWidth', String(newWidth))
+    }
+    function onMouseUp() { isDraggingRef.current = false }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup',   onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup',   onMouseUp)
+    }
+  }, [])
+
+  function handleSidebarDragStart(e: React.MouseEvent) {
+    isDraggingRef.current     = true
+    dragStartXRef.current     = e.clientX
+    dragStartWidthRef.current = sidebarWidth
+    e.preventDefault()
+  }
+
   // ── Activity bar ──────────────────────────────────────────────────────────
   function handleActivityClick(id: PanelId) {
     setActivePanel((prev) => (prev === id ? null : id))
+  }
+
+  // Mobile: toggle sidebar drawer
+  function handleSidebarToggle() {
+    setActivePanel((prev) => (prev ? null : 'files'))
   }
 
   // ── File explorer callbacks ───────────────────────────────────────────────
@@ -113,18 +162,28 @@ export default function App() {
     forceCloseByPrefix(path)
   }, [forceCloseByPrefix])
 
-  // ── Menu item definitions ─────────────────────────────────────────────────
-  function closeMenu() { setOpenMenu(null) }
+  // ── Editor selection getter ───────────────────────────────────────────────
+  const getEditorSelection = useCallback(() => selectionGetterRef.current(), [])
 
+  // ── Menu item definitions ─────────────────────────────────────────────────
   function getMenuItems(menu: string): MenuItemDef[] {
     switch (menu) {
       case 'File': return [
+        {
+          label: 'New File',
+          shortcut: 'Ctrl+N',
+          action: () => newUntitledTab(),
+        },
+        {
+          label: 'Open File…',
+          shortcut: 'Ctrl+O',
+          action: () => void openFileByPath(),
+        },
         {
           label: 'Open Folder…',
           action: () => {
             closeAllTabs()
             fileExplorerRef.current?.requestOpenFolder()
-            closeMenu()
           },
         },
         { type: 'sep' },
@@ -132,11 +191,9 @@ export default function App() {
           label: 'Save',
           shortcut: 'Ctrl+S',
           action: () => {
-            // Triggers EditorArea's window keydown listener
             window.dispatchEvent(
               new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }),
             )
-            closeMenu()
           },
         },
       ]
@@ -148,7 +205,6 @@ export default function App() {
             window.dispatchEvent(
               new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }),
             )
-            closeMenu()
           },
         },
         {
@@ -158,7 +214,6 @@ export default function App() {
             window.dispatchEvent(
               new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true }),
             )
-            closeMenu()
           },
         },
         { type: 'sep' },
@@ -169,7 +224,6 @@ export default function App() {
             window.dispatchEvent(
               new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }),
             )
-            closeMenu()
           },
         },
       ]
@@ -177,17 +231,26 @@ export default function App() {
         {
           label: 'Toggle Explorer',
           shortcut: 'Ctrl+Shift+E',
-          action: () => { handleActivityClick('files'); closeMenu() },
+          action: () => handleActivityClick('files'),
         },
         { type: 'sep' },
         {
           label: 'Command Palette',
           shortcut: 'Ctrl+K',
-          action: () => { togglePalette(); closeMenu() },
+          action: () => togglePalette(),
         },
       ]
       case 'Terminal': return [
-        { label: 'New Terminal', disabled: true },
+        {
+          label: 'New Terminal',
+          shortcut: 'Ctrl+`',
+          action: () => setTerminalOpen(true),
+        },
+        {
+          label: 'Close Terminal',
+          action: () => setTerminalOpen(false),
+          disabled: !terminalOpen,
+        },
       ]
       default: return []
     }
@@ -199,208 +262,197 @@ export default function App() {
     : '—'
 
   const sidebarOpen = activePanel !== null
+  const menus = MENU_NAMES.map((name) => ({ name, items: getMenuItems(name) }))
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-surface font-ui text-on-surface">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-surface font-ui text-on-surface">
 
-      {/* ── Activity bar ──────────────────────────────────────────────────── */}
-      <nav
-        className="flex flex-col items-center py-2 bg-surface-container-low w-12 shrink-0 z-10"
-        aria-label="Activity bar"
-      >
-        <div className="flex flex-col gap-0.5 flex-1">
-          {ACTIVITY_ITEMS.map(({ id, icon, label }) => (
-            <button
-              key={id}
-              title={label}
-              aria-label={label}
-              aria-pressed={activePanel === id}
-              onClick={() => handleActivityClick(id)}
-              className={cn(
-                'relative flex items-center justify-center w-10 h-10 rounded',
-                'transition-colors duration-100',
-                activePanel === id
-                  ? 'text-on-surface bg-white/[0.06]'
-                  : 'text-on-surface/40 hover:text-on-surface hover:bg-white/[0.04]',
-              )}
-            >
-              {icon}
-              {activePanel === id && (
-                <span
-                  className="absolute left-0 top-2 bottom-2 w-[2px] rounded-full bg-primary"
-                  aria-hidden="true"
-                />
-              )}
-            </button>
-          ))}
-        </div>
-        <button
-          title="Settings"
-          aria-label="Settings"
-          className="flex items-center justify-center w-10 h-10 rounded text-on-surface/40 hover:text-on-surface hover:bg-white/[0.04] transition-colors mb-1"
+      {/* ── Unified title bar (full width, single row) ────────────────────── */}
+      <TitleBar
+        menus={menus}
+        onPaletteOpen={togglePalette}
+        onSidebarToggle={handleSidebarToggle}
+      />
+
+      {/* ── Main content ─────────────────────────────────────────────────── */}
+      <div className="flex flex-1 overflow-hidden">
+
+        {/* ── Activity bar — hidden on mobile ───────────────────────────── */}
+        <nav
+          className="hidden md:flex flex-col items-center py-2 bg-surface-container-low w-12 shrink-0 z-10"
+          aria-label="Activity bar"
         >
-          <Settings size={20} />
-        </button>
-      </nav>
-
-      {/* ── Sidebar ───────────────────────────────────────────────────────── */}
-      <aside
-        className={cn(
-          'w-64 shrink-0 flex flex-col bg-surface-container-low',
-          'shadow-[1px_0_0_0_rgba(255,255,255,0.04)]',
-          !sidebarOpen && 'hidden',
-        )}
-        aria-label="Sidebar"
-      >
-        <div className={activePanel === 'files' ? 'flex flex-col h-full' : 'hidden'}>
-          <FileExplorer
-            ref={fileExplorerRef}
-            onFileOpen={handleFileOpen}
-            onFileDelete={handleFileDelete}
-            onWillOpenFolder={closeAllTabs}
-          />
-        </div>
-
-        {activePanel === 'search' && (
-          <PlaceholderPanel label="Search" description="Full-text search — Phase 3" />
-        )}
-        {activePanel === 'git' && (
-          <PlaceholderPanel label="Source Control" description="Git integration — Phase 3" />
-        )}
-        {activePanel === 'extensions' && (
-          <PlaceholderPanel label="Extensions" description="Extension marketplace — Phase 4" />
-        )}
-        {activePanel === 'debug' && (
-          <PlaceholderPanel label="Run & Debug" description="Debugger integration — Phase 4" />
-        )}
-      </aside>
-
-      {/* ── Editor shell ──────────────────────────────────────────────────── */}
-      <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-
-        {/* ── Menu bar ────────────────────────────────────────────────────── */}
-        <header
-          ref={menuBarRef}
-          className="flex items-center gap-1 px-4 h-10 bg-surface-container-low shrink-0 select-none"
-          aria-label="Menu bar"
-        >
-          <span className="font-display text-sm font-bold text-primary tracking-wide mr-3">
-            Luminal Editor
-          </span>
-
-          {MENU_NAMES.map((menu) => (
-            <div key={menu} className="relative">
+          <div className="flex flex-col gap-0.5 flex-1">
+            {ACTIVITY_ITEMS.map(({ id, icon, label }) => (
               <button
-                onClick={() => setOpenMenu((p) => (p === menu ? null : menu))}
+                key={id}
+                title={label}
+                aria-label={label}
+                aria-pressed={activePanel === id}
+                onClick={() => handleActivityClick(id)}
                 className={cn(
-                  'text-[13px] px-2 py-1 rounded transition-colors duration-75',
-                  openMenu === menu
-                    ? 'text-on-surface bg-white/[0.08]'
-                    : 'text-on-surface/55 hover:text-on-surface hover:bg-white/[0.04]',
+                  'relative flex items-center justify-center w-10 h-10 rounded',
+                  'transition-colors duration-100',
+                  activePanel === id
+                    ? 'text-on-surface bg-white/[0.06]'
+                    : 'text-on-surface/40 hover:text-on-surface hover:bg-white/[0.04]',
                 )}
               >
-                {menu}
+                {icon}
+                {activePanel === id && (
+                  <span
+                    className="absolute left-0 top-2 bottom-2 w-[2px] rounded-full bg-primary"
+                    aria-hidden="true"
+                  />
+                )}
               </button>
-              {openMenu === menu && (
-                <MenuDropdown items={getMenuItems(menu)} onClose={closeMenu} />
-              )}
-            </div>
-          ))}
-
+            ))}
+          </div>
           <button
-            onClick={togglePalette}
-            className={cn(
-              'ml-auto flex items-center gap-2 px-3 py-1 rounded',
-              'bg-surface-container text-on-surface/45 text-[12px]',
-              'hover:bg-surface-container-high hover:text-on-surface transition-colors',
-            )}
-            aria-label="Open command palette (Ctrl+K)"
+            title="Settings"
+            aria-label="Settings"
+            className="flex items-center justify-center w-10 h-10 rounded text-on-surface/40 hover:text-on-surface hover:bg-white/[0.04] transition-colors mb-1"
           >
-            <Search size={12} />
-            <span>Command Palette</span>
-            <kbd className="font-mono text-[10px] text-on-surface/25">Ctrl+K</kbd>
+            <Settings size={20} />
           </button>
-        </header>
+        </nav>
 
-        {/* ── Editor area ─────────────────────────────────────────────────── */}
-        <div className="flex-1 flex min-h-0 overflow-hidden">
-          <EditorArea
-            tabs={tabs}
-            activeTabPath={activeTabPath}
-            onTabClick={focusTab}
-            onTabClose={closeTab}
-            onDirtyChange={setDirty}
-            onSave={saveTab}
+        {/* ── Mobile backdrop ────────────────────────────────────────────── */}
+        {isMobile && sidebarOpen && (
+          <div
+            className="fixed inset-0 z-30 bg-black/50"
+            onClick={() => setActivePanel(null)}
+            aria-hidden="true"
           />
-        </div>
+        )}
 
-        {/* ── Status bar ──────────────────────────────────────────────────── */}
-        <footer
-          className="flex items-center justify-between px-4 h-6 bg-surface-container-low shrink-0 text-[11px] text-on-surface/30 font-ui"
-          aria-label="Status bar"
-        >
-          <span className="flex items-center gap-4">
-            <span className="flex items-center gap-1.5">
-              <GitBranch size={11} />
-              main
-            </span>
-            <span className="text-tertiary/70">● 0 Errors</span>
-            <span className="text-yellow-500/60">▲ 2 Warnings</span>
-          </span>
-          <span className="flex items-center gap-4">
-            {activeTab && (
-              <>
-                <span>{activeTab.isDirty ? '● ' : ''}
-                  {activeTab.name}
-                </span>
-                <span className="text-on-surface/20">|</span>
-              </>
+        {/* ── Sidebar ───────────────────────────────────────────────────── */}
+        {sidebarOpen && (
+          <aside
+            style={isMobile ? undefined : { width: sidebarWidth }}
+            className={cn(
+              'flex flex-col bg-surface-container-low',
+              isMobile
+                // Mobile: fixed overlay drawer
+                ? 'fixed top-9 bottom-0 left-0 z-40 w-[85vw] max-w-xs shadow-2xl shadow-black/60'
+                // Desktop: normal in-flow sidebar
+                : 'shrink-0 shadow-[1px_0_0_0_rgba(255,255,255,0.04)]',
             )}
-            <span>Spaces: 2</span>
-            <span>UTF-8</span>
-            <span className="text-on-surface/45">{langLabel}</span>
-          </span>
-        </footer>
+            aria-label="Sidebar"
+          >
+            {/* Mobile: activity tabs inside the drawer */}
+            {isMobile && (
+              <div className="flex items-center gap-1 px-2 py-2 border-b border-white/[0.06] shrink-0 overflow-x-auto scrollbar-none">
+                {ACTIVITY_ITEMS.map(({ id, icon, label }) => (
+                  <button
+                    key={id}
+                    title={label}
+                    onClick={() => handleActivityClick(id)}
+                    className={cn(
+                      'flex items-center justify-center w-9 h-9 rounded shrink-0 transition-colors',
+                      activePanel === id
+                        ? 'text-on-surface bg-white/[0.08]'
+                        : 'text-on-surface/35 hover:text-on-surface hover:bg-white/[0.04]',
+                    )}
+                  >
+                    {icon}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className={activePanel === 'files' ? 'flex flex-col flex-1 min-h-0' : 'hidden'}>
+              <FileExplorer
+                ref={fileExplorerRef}
+                onFileOpen={(node) => { handleFileOpen(node); if (isMobile) setActivePanel(null) }}
+                onFileDelete={handleFileDelete}
+                onWillOpenFolder={closeAllTabs}
+                onRootChange={setRootAbsPath}
+              />
+            </div>
+
+            {activePanel === 'search' && (
+              <PlaceholderPanel label="Search" description="Full-text search — coming soon" />
+            )}
+            {activePanel === 'git' && (
+              <SourceControlPanel rootAbsPath={rootAbsPath} />
+            )}
+            {activePanel === 'ai' && (
+              <AIPanel activeTab={activeTab} getEditorSelection={getEditorSelection} />
+            )}
+            {activePanel === 'extensions' && (
+              <PlaceholderPanel label="Extensions" description="Extension marketplace — Phase 4" />
+            )}
+            {activePanel === 'debug' && (
+              <PlaceholderPanel label="Run & Debug" description="Debugger integration — Phase 4" />
+            )}
+          </aside>
+        )}
+
+        {/* ── Sidebar resize handle — desktop only ──────────────────────── */}
+        {sidebarOpen && !isMobile && (
+          <div
+            className="w-[3px] shrink-0 cursor-col-resize hover:bg-primary/30 active:bg-primary/50 transition-colors"
+            onMouseDown={handleSidebarDragStart}
+          />
+        )}
+
+        {/* ── Editor shell ──────────────────────────────────────────────── */}
+        <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+
+          {/* Editor area — takes all remaining vertical space */}
+          <div className="flex-1 flex min-h-0 overflow-hidden">
+            <EditorArea
+              tabs={tabs}
+              activeTabPath={activeTabPath}
+              onTabClick={focusTab}
+              onTabClose={closeTab}
+              onDirtyChange={setDirty}
+              onSave={saveTab}
+              selectionGetterRef={selectionGetterRef}
+            />
+          </div>
+
+          {/* Collapsible terminal panel */}
+          <TerminalPanel
+            isOpen={terminalOpen}
+            onClose={() => setTerminalOpen(false)}
+          />
+
+          {/* Status bar */}
+          <footer
+            className="flex items-center justify-between px-4 h-6 bg-surface-container-low shrink-0 text-[11px] text-on-surface/30 font-ui"
+            aria-label="Status bar"
+          >
+            <span className="flex items-center gap-4">
+              <span className="flex items-center gap-1.5">
+                <GitBranch size={11} />
+                main
+              </span>
+              <span className="text-tertiary/70">● 0 Errors</span>
+              <span className="text-yellow-500/60">▲ 2 Warnings</span>
+            </span>
+            <span className="flex items-center gap-4">
+              {activeTab && (
+                <>
+                  <span>{activeTab.isDirty ? '● ' : ''}{activeTab.name}</span>
+                  <span className="text-on-surface/20">|</span>
+                </>
+              )}
+              <span>Spaces: 2</span>
+              <span>UTF-8</span>
+              <span className="text-on-surface/45">{langLabel}</span>
+            </span>
+          </footer>
+        </div>
       </div>
 
-      {/* ── Command Palette ──────────────────────────────────────────────── */}
+      {/* ── Command Palette ───────────────────────────────────────────────── */}
       <CommandPalette
         open={paletteOpen}
         onClose={closePalette}
         commands={APP_COMMANDS}
       />
-    </div>
-  )
-}
-
-// ─── Menu dropdown ────────────────────────────────────────────────────────────
-
-function MenuDropdown({ items, onClose }: { items: MenuItemDef[]; onClose: () => void }) {
-  return (
-    <div className="absolute top-full left-0 z-50 mt-0.5 min-w-[200px] py-1 bg-surface-container rounded shadow-2xl shadow-black/60 border border-white/[0.06]">
-      {items.map((item, i) =>
-        item.type === 'sep' ? (
-          <div key={i} className="my-1 mx-2 border-t border-white/[0.05]" />
-        ) : (
-          <button
-            key={i}
-            onClick={item.action ?? onClose}
-            disabled={item.disabled}
-            className={cn(
-              'flex items-center justify-between w-full px-4 py-1.5',
-              'text-[12px] font-ui text-on-surface/75',
-              'hover:bg-white/[0.06] hover:text-on-surface',
-              'disabled:opacity-30 disabled:cursor-not-allowed',
-              'transition-colors duration-75',
-            )}
-          >
-            <span>{item.label}</span>
-            {item.shortcut && (
-              <span className="ml-8 text-on-surface/30 text-[10px] font-mono">{item.shortcut}</span>
-            )}
-          </button>
-        ),
-      )}
     </div>
   )
 }

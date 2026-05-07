@@ -18,6 +18,7 @@
 import {
   useState,
   useCallback,
+  useEffect,
   useRef,
   forwardRef,
   useImperativeHandle,
@@ -56,6 +57,7 @@ import { cn } from '../../lib/utils'
 
 export interface FileExplorerHandle {
   requestOpenFolder: () => void
+  rootAbsPath: string | null
 }
 
 interface FileExplorerProps {
@@ -65,10 +67,12 @@ interface FileExplorerProps {
   onFileDelete?: (path: string) => void
   /** Called just before the folder picker opens — use it to close stale editor tabs. */
   onWillOpenFolder?: () => void
+  /** Called whenever the root folder path changes (including on close). */
+  onRootChange?: (path: string | null) => void
 }
 
 export const FileExplorer = forwardRef<FileExplorerHandle, FileExplorerProps>(
-  function FileExplorer({ onFileOpen, onFileDelete, onWillOpenFolder }, ref) {
+  function FileExplorer({ onFileOpen, onFileDelete, onWillOpenFolder, onRootChange }, ref) {
   const fs = useFileSystem()
   const { state, openFolder, toggleExpand, createFile, createFolder,
           renameNode, deleteNode, copyPath, copyRelativePath, refreshDirectory,
@@ -84,7 +88,13 @@ export const FileExplorer = forwardRef<FileExplorerHandle, FileExplorerProps>(
 
   useImperativeHandle(ref, () => ({
     requestOpenFolder: () => void openFolder(),
-  }), [openFolder])
+    rootAbsPath: state.rootAbsPath ?? null,
+  }), [openFolder, state.rootAbsPath])
+
+  // Notify parent whenever the root path changes
+  useEffect(() => {
+    onRootChange?.(state.rootAbsPath ?? null)
+  }, [state.rootAbsPath, onRootChange])
 
   // ── Context menu builder ─────────────────────────────────────────────────
 
@@ -173,7 +183,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, FileExplorerProps>(
       { type: 'action', id: 'openSettings', label: 'Open Folder Settings',
         action: () => console.log('[explorer] folder settings') },
       { type: 'action', id: 'removeFolder', label: 'Remove Folder from Workspace',
-        disabled: !state.rootHandle,
+        disabled: !state.rootAbsPath,
         action: () => console.log('[explorer] remove folder') },
       { type: 'separator' },
       { type: 'action', id: 'find',         label: 'Find in Folder…',            shortcut: 'Shift+Alt+F',
@@ -194,7 +204,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, FileExplorerProps>(
         action: () => console.log('[explorer] terminal root') },
     ]
   }, [copyPath, copyRelativePath, deleteNode, onFileDelete, onWillOpenFolder, openFolder,
-      refreshDirectory, selectedPath, state.rootHandle, toggleExpand])
+      refreshDirectory, selectedPath, state.rootAbsPath, toggleExpand])
 
   // ── Context menu open ────────────────────────────────────────────────────
 
@@ -301,7 +311,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, FileExplorerProps>(
         </span>
 
         {/* Toolbar icons — visible on hover of the header */}
-        {state.rootHandle && (
+        {state.rootAbsPath && (
           <div className="flex items-center gap-0.5">
             <ToolbarButton title="New File (Ctrl+N)"   onClick={handleNewFile}>
               <FilePlus size={14} />
@@ -342,7 +352,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, FileExplorerProps>(
         aria-label="File tree"
       >
         {/* Empty state — no folder opened yet */}
-        {!state.rootHandle && (
+        {!state.rootAbsPath && (
           <div className="flex flex-col items-center justify-center gap-4 h-full px-4 pb-8">
             <FolderOpen size={32} className="text-on-surface/15" aria-hidden="true" />
             <p className="text-[12px] text-on-surface/30 text-center leading-relaxed">
