@@ -53,7 +53,7 @@ function findNodeInTree(nodes: FileNode[], path: string): FileNode | null {
   }
   return null
 }
-import { cn } from '../../lib/utils'
+import { cn, isTauri } from '../../lib/utils'
 
 export interface FileExplorerHandle {
   requestOpenFolder: () => void
@@ -355,19 +355,30 @@ export const FileExplorer = forwardRef<FileExplorerHandle, FileExplorerProps>(
         {!state.rootAbsPath && (
           <div className="flex flex-col items-center justify-center gap-4 h-full px-4 pb-8">
             <FolderOpen size={32} className="text-on-surface/15" aria-hidden="true" />
-            <p className="text-[12px] text-on-surface/30 text-center leading-relaxed">
-              You have not opened a folder.
-            </p>
-            <button
-              onClick={() => { onWillOpenFolder?.(); void openFolder() }}
-              className={cn(
-                'px-4 py-2 rounded text-sm font-ui font-medium',
-                'bg-primary/20 text-primary hover:bg-primary/30',
-                'transition-colors duration-150',
-              )}
-            >
-              Open Folder
-            </button>
+            {isTauri() ? (
+              <>
+                <p className="text-[12px] text-on-surface/30 text-center leading-relaxed">
+                  You have not opened a folder.
+                </p>
+                <button
+                  onClick={() => { onWillOpenFolder?.(); void openFolder() }}
+                  className={cn(
+                    'px-4 py-2 rounded text-sm font-ui font-medium',
+                    'bg-primary/20 text-primary hover:bg-primary/30',
+                    'transition-colors duration-150',
+                  )}
+                >
+                  Open Folder
+                </button>
+              </>
+            ) : (
+              <p className="text-[12px] text-on-surface/30 text-center leading-relaxed px-2">
+                File browsing requires the{' '}
+                <span className="text-primary">desktop app</span>.
+                <br />
+                The editor and AI assistant are available here.
+              </p>
+            )}
           </div>
         )}
 

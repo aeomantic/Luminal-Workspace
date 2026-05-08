@@ -1,11 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Minus, Square, Copy, X, Search, Menu } from 'lucide-react'
-import { cn } from '../../lib/utils'
-
-function isTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-}
+import { cn, isTauri } from '../../lib/utils'
 
 // ── Shared menu types (also used by App.tsx) ──────────────────────────────────
 

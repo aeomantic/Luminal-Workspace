@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { readDir, writeTextFile, mkdir, remove, rename } from '@tauri-apps/plugin-fs'
 import { open } from '@tauri-apps/plugin-dialog'
+import { isTauri } from '../../lib/utils'
 import type { FileNode } from './types'
 
 // ─── Path helpers ─────────────────────────────────────────────────────────────
@@ -136,6 +137,7 @@ export function useFileSystem(): UseFileSystemReturn {
 
   // ── Restore last folder on mount ───────────────────────────────────────────
   useEffect(() => {
+    if (!isTauri()) return
     const saved = localStorage.getItem(LAST_FOLDER_KEY)
     if (!saved) return
     let cancelled = false
@@ -155,6 +157,7 @@ export function useFileSystem(): UseFileSystemReturn {
   // ── Open folder ────────────────────────────────────────────────────────────
 
   const openFolder = useCallback(async () => {
+    if (!isTauri()) return
     try {
       const selected = await open({ directory: true, multiple: false, title: 'Open Folder' }) as string | null
       if (!selected) return
