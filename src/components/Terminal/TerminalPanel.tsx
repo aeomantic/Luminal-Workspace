@@ -3,8 +3,8 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { X, Plus, ChevronDown, ChevronUp } from 'lucide-react'
-import { cn } from '../../lib/utils'
+import { X, Plus, ChevronDown, ChevronUp, MonitorX } from 'lucide-react'
+import { cn, isTauri } from '../../lib/utils'
 import '@xterm/xterm/css/xterm.css'
 
 interface TerminalPanelProps {
@@ -163,6 +163,24 @@ export function TerminalPanel({ isOpen, onClose }: TerminalPanelProps) {
   }, [isDragging])
 
   if (!isOpen) return null
+
+  // In the browser the PTY backend isn't available — show a friendly message
+  if (!isTauri()) {
+    return (
+      <div className="flex items-center justify-between px-4 h-10 bg-surface-container-low shrink-0 border-t border-white/[0.04]">
+        <div className="flex items-center gap-2 text-on-surface/35 text-[12px]">
+          <MonitorX size={13} />
+          <span>Terminal requires the desktop app</span>
+        </div>
+        <button
+          onClick={onClose}
+          className="flex items-center justify-center w-5 h-5 rounded text-on-surface/30 hover:text-on-surface hover:bg-white/[0.06] transition-colors"
+        >
+          <X size={11} />
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div

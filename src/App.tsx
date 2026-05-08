@@ -7,6 +7,7 @@ import {
   Bug,
   Settings,
   Bot,
+  TerminalSquare,
 } from 'lucide-react'
 import {
   CommandPalette,
@@ -358,6 +359,19 @@ export default function App() {
                     {icon}
                   </button>
                 ))}
+                {/* Terminal toggle */}
+                <button
+                  title="Toggle Terminal"
+                  onClick={() => { setTerminalOpen((p) => !p); setActivePanel(null) }}
+                  className={cn(
+                    'flex items-center justify-center w-9 h-9 rounded shrink-0 transition-colors',
+                    terminalOpen
+                      ? 'text-on-surface bg-white/[0.08]'
+                      : 'text-on-surface/35 hover:text-on-surface hover:bg-white/[0.04]',
+                  )}
+                >
+                  <TerminalSquare size={20} />
+                </button>
               </div>
             )}
 
