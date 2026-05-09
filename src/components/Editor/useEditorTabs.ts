@@ -33,6 +33,7 @@ const EXT_TO_LANG: Record<string, string> = {
   dockerfile: 'dockerfile',
   graphql: 'graphql', gql: 'graphql',
   txt: 'plaintext',   log: 'plaintext',   env: 'plaintext',
+  pdf: 'pdf',
 }
 
 export function detectLanguage(name: string): string {
@@ -127,14 +128,16 @@ export function useEditorTabs(): UseEditorTabsReturn {
       return
     }
 
+    const lang = detectLanguage(node.name)
     try {
-      const text = await readTextFile(node.absPath)
+      // PDFs are binary — PdfViewer reads the file itself; skip text read
+      const text = lang === 'pdf' ? '' : await readTextFile(node.absPath)
       const newTab: EditorTab = {
         path:         node.path,
         name:         node.name,
         savedContent: text,
         absPath:      node.absPath,
-        language:     detectLanguage(node.name),
+        language:     lang,
         isDirty:      false,
       }
 

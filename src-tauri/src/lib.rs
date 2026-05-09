@@ -1,5 +1,6 @@
 use futures_util::StreamExt;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Mutex;
 use tauri::Emitter;
@@ -14,7 +15,7 @@ struct PtyHandles {
 }
 
 pub struct AppState {
-    pty: Mutex<PtyHandles>,
+    ptys: Mutex<HashMap<String, PtyHandles>>,
 }
 
 // ── PTY commands ──────────────────────────────────────────────────────────────
@@ -23,6 +24,7 @@ pub struct AppState {
 fn pty_create(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
+    id: String,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
@@ -48,47 +50,65 @@ fn pty_create(
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
     {
-        let mut pty = state.pty.lock().map_err(|e| e.to_string())?;
-        pty.writer  = Some(writer);
-        pty.master  = Some(pair.master);
-        pty._slave  = Some(pair.slave);
-        pty._child  = Some(child);
+        let mut ptys = state.ptys.lock().map_err(|e| e.to_string())?;
+        ptys.insert(id.clone(), PtyHandles {
+            writer: Some(writer),
+            master: Some(pair.master),
+            _slave: Some(pair.slave),
+            _child: Some(child),
+        });
     }
 
     let app_handle = app.clone();
+    let id_clone   = id.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
-                Ok(n) => { app_handle.emit("pty-output", String::from_utf8_lossy(&buf[..n]).to_string()).ok(); }
+                Ok(n) => {
+                    app_handle
+                        .emit(
+                            &format!("pty-output-{}", id_clone),
+                            String::from_utf8_lossy(&buf[..n]).to_string(),
+                        )
+                        .ok();
+                }
             }
         }
+        app_handle.emit(&format!("pty-exit-{}", id_clone), ()).ok();
     });
 
     Ok(())
 }
 
 #[tauri::command]
-fn pty_write(state: tauri::State<AppState>, data: String) -> Result<(), String> {
-    let mut pty = state.pty.lock().map_err(|e| e.to_string())?;
-    if let Some(w) = pty.writer.as_mut() { w.write_all(data.as_bytes()).map_err(|e| e.to_string())? }
-    Ok(())
-}
-
-#[tauri::command]
-fn pty_resize(state: tauri::State<AppState>, cols: u16, rows: u16) -> Result<(), String> {
-    let pty = state.pty.lock().map_err(|e| e.to_string())?;
-    if let Some(m) = pty.master.as_ref() {
-        m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
+fn pty_write(state: tauri::State<AppState>, id: String, data: String) -> Result<(), String> {
+    let mut ptys = state.ptys.lock().map_err(|e| e.to_string())?;
+    if let Some(pty) = ptys.get_mut(&id) {
+        if let Some(w) = pty.writer.as_mut() {
+            w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
 
 #[tauri::command]
-fn pty_close(state: tauri::State<AppState>) -> Result<(), String> {
-    let mut pty = state.pty.lock().map_err(|e| e.to_string())?;
-    pty.writer = None; pty.master = None; pty._slave = None; pty._child = None;
+fn pty_resize(state: tauri::State<AppState>, id: String, cols: u16, rows: u16) -> Result<(), String> {
+    let ptys = state.ptys.lock().map_err(|e| e.to_string())?;
+    if let Some(pty) = ptys.get(&id) {
+        if let Some(m) = pty.master.as_ref() {
+            m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn pty_close(state: tauri::State<AppState>, id: String) -> Result<(), String> {
+    let mut ptys = state.ptys.lock().map_err(|e| e.to_string())?;
+    ptys.remove(&id);
     Ok(())
 }
 
@@ -347,7 +367,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
-            pty: Mutex::new(PtyHandles { writer: None, master: None, _slave: None, _child: None }),
+            ptys: Mutex::new(HashMap::new()),
         })
         .setup(|app| {
             if cfg!(debug_assertions) {

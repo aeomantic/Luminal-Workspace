@@ -16,7 +16,12 @@ import {
   type EditorCommand,
 } from './components/CommandPalette'
 import { FileExplorer, type FileExplorerHandle } from './components/FileExplorer'
-import { EditorArea } from './components/Editor/EditorArea'
+import {
+  SplitEditor,
+  type SplitEditorHandle,
+  type EditorGroup,
+  type SplitDirection,
+} from './components/Editor/SplitEditor'
 import { useEditorTabs } from './components/Editor/useEditorTabs'
 import type { FileNode } from './components/FileExplorer/types'
 import { TitleBar, type MenuItemDef } from './components/TitleBar'
@@ -40,7 +45,7 @@ const ACTIVITY_ITEMS: ActivityItem[] = [
   { id: 'debug',      icon: <Bug       size={20} />, label: 'Run and Debug'             },
 ]
 
-const MENU_NAMES = ['File', 'Edit', 'View', 'Terminal'] as const
+const MENU_NAMES = ['File', 'Edit', 'View', 'Terminal', 'Layout'] as const
 
 // ── Command registry ──────────────────────────────────────────────────────────
 
@@ -64,6 +69,12 @@ export default function App() {
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [rootAbsPath,  setRootAbsPath]  = useState<string | null>(null)
 
+  // ── Split editor state ────────────────────────────────────────────────────
+  const [groups,         setGroups]         = useState<EditorGroup[]>([{ id: 'main', activeTabPath: null }])
+  const [splitDirection, setSplitDirection] = useState<SplitDirection>('none')
+  const [focusedGroupId, setFocusedGroupId] = useState('main')
+  const splitEditorRef = useRef<SplitEditorHandle>(null)
+
   // Responsive: track whether we're in mobile layout (< 768px)
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < 768 : false,
@@ -83,8 +94,7 @@ export default function App() {
   const dragStartXRef      = useRef(0)
   const dragStartWidthRef  = useRef(0)
 
-  const fileExplorerRef  = useRef<FileExplorerHandle>(null)
-  const selectionGetterRef = useRef<() => string>(() => '')
+  const fileExplorerRef = useRef<FileExplorerHandle>(null)
 
   const editorTabs = useEditorTabs()
   const {
@@ -97,27 +107,38 @@ export default function App() {
     closeTab,
     closeAllTabs,
     forceCloseByPrefix,
-    focusTab,
     setDirty,
     saveTab,
   } = editorTabs
+
+  // Sync the focused group's activeTabPath whenever useEditorTabs opens a new file
+  const prevActiveTabPath = useRef<string | null>(null)
+  useEffect(() => {
+    if (activeTabPath && activeTabPath !== prevActiveTabPath.current) {
+      prevActiveTabPath.current = activeTabPath
+      setGroups((prev) =>
+        prev.map((g) => g.id === focusedGroupId ? { ...g, activeTabPath } : g),
+      )
+    }
+  }, [activeTabPath, focusedGroupId])
 
   // ── Palette ───────────────────────────────────────────────────────────────
   const togglePalette = useCallback(() => setPaletteOpen((p) => !p), [])
   const closePalette  = useCallback(() => setPaletteOpen(false),     [])
   useCommandPaletteShortcut(togglePalette)
 
-  // ── Ctrl+` — toggle terminal panel ───────────────────────────────────────
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key === '`') {
-        e.preventDefault()
-        setTerminalOpen((p) => !p)
-      }
+      const ctrl = e.ctrlKey || e.metaKey
+      if (ctrl && e.key === '`') { e.preventDefault(); setTerminalOpen((p) => !p) }
+      if (ctrl && !e.shiftKey && e.key === '\\') { e.preventDefault(); if (groups.length < 2) handleSplit('horizontal') }
+      if (ctrl && e.shiftKey  && e.key === '\\') { e.preventDefault(); if (groups.length < 2) handleSplit('vertical') }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups.length])
 
   // ── Sidebar resize drag ───────────────────────────────────────────────────
   useEffect(() => {
@@ -163,8 +184,43 @@ export default function App() {
     forceCloseByPrefix(path)
   }, [forceCloseByPrefix])
 
+  // ── Split editor handlers ─────────────────────────────────────────────────
+  function handleSplit(direction: 'horizontal' | 'vertical') {
+    const focused = groups.find((g) => g.id === focusedGroupId) ?? groups[0]
+    const newId   = `group-${Date.now()}`
+    setGroups((prev) => [...prev, { id: newId, activeTabPath: focused.activeTabPath }])
+    setSplitDirection(direction)
+    setFocusedGroupId(newId)
+  }
+
+  function handleCloseGroup(groupId: string) {
+    const remaining = groups.filter((g) => g.id !== groupId)
+    setGroups(remaining.length > 0 ? remaining : [{ id: 'main', activeTabPath: null }])
+    if (remaining.length <= 1) setSplitDirection('none')
+    setFocusedGroupId(remaining.find((g) => g.id !== groupId)?.id ?? 'main')
+  }
+
+  function handleGroupTabClick(groupId: string, path: string) {
+    setFocusedGroupId(groupId)
+    setGroups((prev) => prev.map((g) => g.id === groupId ? { ...g, activeTabPath: path } : g))
+  }
+
+  function handleTabClose(path: string) {
+    // Remove from all groups that had this path active, then close the tab
+    setGroups((prev) => prev.map((g) => {
+      if (g.activeTabPath !== path) return g
+      const idx  = tabs.findIndex((t) => t.path === path)
+      const rest = tabs.filter((t) => t.path !== path)
+      return { ...g, activeTabPath: rest[idx]?.path ?? rest[Math.max(0, idx - 1)]?.path ?? null }
+    }))
+    closeTab(path)
+  }
+
   // ── Editor selection getter ───────────────────────────────────────────────
-  const getEditorSelection = useCallback(() => selectionGetterRef.current(), [])
+  const getEditorSelection = useCallback(
+    () => splitEditorRef.current?.getActiveSelection() ?? '',
+    [],
+  )
 
   // ── Menu item definitions ─────────────────────────────────────────────────
   function getMenuItems(menu: string): MenuItemDef[] {
@@ -184,6 +240,8 @@ export default function App() {
           label: 'Open Folder…',
           action: () => {
             closeAllTabs()
+            setGroups([{ id: 'main', activeTabPath: null }])
+            setSplitDirection('none')
             fileExplorerRef.current?.requestOpenFolder()
           },
         },
@@ -253,13 +311,35 @@ export default function App() {
           disabled: !terminalOpen,
         },
       ]
+      case 'Layout': return [
+        {
+          label: 'Split Editor Right',
+          shortcut: 'Ctrl+\\',
+          action: () => handleSplit('horizontal'),
+          disabled: groups.length >= 2,
+        },
+        {
+          label: 'Split Editor Down',
+          shortcut: 'Ctrl+Shift+\\',
+          action: () => handleSplit('vertical'),
+          disabled: groups.length >= 2,
+        },
+        { type: 'sep' },
+        {
+          label: 'Close Editor Group',
+          action: () => handleCloseGroup(focusedGroupId),
+          disabled: groups.length <= 1,
+        },
+      ]
       default: return []
     }
   }
 
-  // ── Language label for status bar ─────────────────────────────────────────
-  const langLabel = activeTab
-    ? activeTab.language.charAt(0).toUpperCase() + activeTab.language.slice(1)
+  // ── Active tab for the focused group (status bar) ────────────────────────
+  const focusedGroupPath = groups.find((g) => g.id === focusedGroupId)?.activeTabPath ?? null
+  const focusedTab = tabs.find((t) => t.path === focusedGroupPath) ?? activeTab ?? null
+  const langLabel  = focusedTab
+    ? focusedTab.language.charAt(0).toUpperCase() + focusedTab.language.slice(1)
     : '—'
 
   const sidebarOpen = activePanel !== null
@@ -378,9 +458,12 @@ export default function App() {
             <div className={activePanel === 'files' ? 'flex flex-col flex-1 min-h-0' : 'hidden'}>
               <FileExplorer
                 ref={fileExplorerRef}
-                onFileOpen={(node) => { handleFileOpen(node); if (isMobile) setActivePanel(null) }}
+                onFileOpen={(node) => {
+                  handleFileOpen(node)
+                  if (isMobile) setActivePanel(null)
+                }}
                 onFileDelete={handleFileDelete}
-                onWillOpenFolder={closeAllTabs}
+                onWillOpenFolder={() => { closeAllTabs(); setGroups([{ id: 'main', activeTabPath: null }]); setSplitDirection('none') }}
                 onRootChange={setRootAbsPath}
               />
             </div>
@@ -392,7 +475,7 @@ export default function App() {
               <SourceControlPanel rootAbsPath={rootAbsPath} />
             )}
             {activePanel === 'ai' && (
-              <AIPanel activeTab={activeTab} getEditorSelection={getEditorSelection} />
+              <AIPanel activeTab={focusedTab} getEditorSelection={getEditorSelection} />
             )}
             {activePanel === 'extensions' && (
               <PlaceholderPanel label="Extensions" description="Extension marketplace — Phase 4" />
@@ -414,16 +497,20 @@ export default function App() {
         {/* ── Editor shell ──────────────────────────────────────────────── */}
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
 
-          {/* Editor area — takes all remaining vertical space */}
+          {/* Editor area — split-aware */}
           <div className="flex-1 flex min-h-0 overflow-hidden">
-            <EditorArea
+            <SplitEditor
+              ref={splitEditorRef}
               tabs={tabs}
-              activeTabPath={activeTabPath}
-              onTabClick={focusTab}
-              onTabClose={closeTab}
+              groups={groups}
+              splitDirection={splitDirection}
+              focusedGroupId={focusedGroupId}
+              onTabClick={handleGroupTabClick}
+              onTabClose={handleTabClose}
               onDirtyChange={setDirty}
               onSave={saveTab}
-              selectionGetterRef={selectionGetterRef}
+              onGroupFocus={setFocusedGroupId}
+              onCloseGroup={handleCloseGroup}
             />
           </div>
 
@@ -447,9 +534,9 @@ export default function App() {
               <span className="text-yellow-500/60">▲ 2 Warnings</span>
             </span>
             <span className="flex items-center gap-4">
-              {activeTab && (
+              {focusedTab && (
                 <>
-                  <span>{activeTab.isDirty ? '● ' : ''}{activeTab.name}</span>
+                  <span>{focusedTab.isDirty ? '● ' : ''}{focusedTab.name}</span>
                   <span className="text-on-surface/20">|</span>
                 </>
               )}

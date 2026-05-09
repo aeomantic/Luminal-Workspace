@@ -21,8 +21,9 @@ import {
 } from 'react'
 import MonacoEditor, { type OnMount } from '@monaco-editor/react'
 import type { editor as MonacoEditorNS } from 'monaco-editor'
-import { X, FileText } from 'lucide-react'
+import { X, FileText, PanelRightClose } from 'lucide-react'
 import type { EditorTab } from './useEditorTabs'
+import { PdfViewer } from '../PdfViewer'
 import { cn } from '../../lib/utils'
 
 // ── Kinetic Void Monaco theme ─────────────────────────────────────────────────
@@ -140,6 +141,9 @@ interface EditorAreaProps {
   onSave:       (path: string, content: string) => Promise<void>
   /** App writes a getter fn here; call it to get the current editor selection. */
   selectionGetterRef?: React.MutableRefObject<() => string>
+  /** Show a close-group button in the tab bar (split mode only). */
+  showCloseGroup?: boolean
+  onCloseGroup?:   () => void
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -152,6 +156,8 @@ export function EditorArea({
   onDirtyChange,
   onSave,
   selectionGetterRef,
+  showCloseGroup = false,
+  onCloseGroup,
 }: EditorAreaProps) {
   const editorRef = useRef<MonacoEditorNS.IStandaloneCodeEditor | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -246,6 +252,17 @@ export function EditorArea({
         aria-label="Open files"
         className="flex items-end bg-surface shrink-0 overflow-x-auto scrollbar-none"
       >
+        {/* Close-group button (split mode) */}
+        {showCloseGroup && (
+          <button
+            onClick={onCloseGroup}
+            title="Close Editor Group"
+            className="shrink-0 flex items-center justify-center w-8 h-9 text-on-surface/25 hover:text-on-surface hover:bg-white/[0.06] transition-colors"
+          >
+            <PanelRightClose size={13} />
+          </button>
+        )}
+
         {tabs.map((tab) => {
           const isActive = tab.path === activeTabPath
           return (
@@ -316,11 +333,13 @@ export function EditorArea({
         </div>
       )}
 
-      {/* ── Monaco Editor ─────────────────────────────────────────────────── */}
-      {/* We always render one Editor and change its path/language.
-          `path` tells @monaco-editor/react to use a separate model per file,
-          preserving each file's undo/redo history when you switch tabs. */}
-      {activeTab && (
+      {/* ── Content: PDF viewer or Monaco ─────────────────────────────────── */}
+      {activeTab && activeTab.language === 'pdf' && activeTab.absPath ? (
+        <PdfViewer absPath={activeTab.absPath} tabPath={activeTab.path} />
+      ) : activeTab ? (
+        /* We always render one Editor and change its path/language.
+           `path` tells @monaco-editor/react to use a separate model per file,
+           preserving each file's undo/redo history when you switch tabs. */
         <div className="flex-1 min-h-0">
           <MonacoEditor
             path={activeTab.path}
@@ -346,7 +365,7 @@ export function EditorArea({
             }
           />
         </div>
-      )}
+      ) : null}
     </div>
   )
 }
